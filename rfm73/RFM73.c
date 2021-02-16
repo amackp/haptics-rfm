@@ -76,7 +76,7 @@ extern uint8_t test_data;
 extern uint8_t  channel;
 extern uint8_t  power;
 extern uint8_t  data_rate;
-extern uint8_t rx_buf[MAX_PACKET_LEN];
+//extern uint8_t rx_buf[MAX_PACKET_LEN];
 
 
 ///////////////////////////////////////////////////////////////////////////////

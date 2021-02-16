@@ -70,7 +70,7 @@
 //
 //*****************************************************************************
 #define TIME_INTERVAL_MS    10
-#define INTERVAL_TIME       (1000000/(1000/TIME_INTERVAL_MS))
+#define INTERVAL_TIME       (32768/(1000/TIME_INTERVAL_MS))
 #define TIME_1S             (1000/TIME_INTERVAL_MS)
 
 #define TIME_10HZ           (TIME_1S/10)
@@ -79,6 +79,7 @@
 #define TIME_0_5HZ          (TIME_1S*2)
 #define TIME_0_1HZ          (TIME_1S*10)
 
+#define CLOCK_OFFSET        (-100)//(TIME_INTERVAL_MS*5)
 
 
 typedef enum{
@@ -117,18 +118,10 @@ void clock_init(){
         CS_CLOCK_DIVIDER_1
         );
 
-
-    //Set DCO FLL reference = REFO
     CS_initFLLSettle(8000, 244);
 
+    CS_setExternalClockSource(32768);
 
-
-    //Set SMCLK = REFO
-    CS_initClockSignal(
-        CS_ACLK,
-        CS_REFOCLK_SELECT,
-        CS_CLOCK_DIVIDER_1
-        );
     CS_initClockSignal(
         CS_SMCLK,
         CS_DCOCLKDIV_SELECT,
@@ -139,6 +132,9 @@ void clock_init(){
         CS_DCOCLKDIV_SELECT,
         CS_CLOCK_DIVIDER_1
         );
+
+    CS_turnOnXT1LF(CS_XT1_DRIVE_0);
+
 
     volatile uint32_t m_freq = CS_getMCLK();
     volatile uint32_t sm_freq = CS_getSMCLK();
@@ -184,6 +180,12 @@ void gpio_init(){
 
     P2OUT |= BIT4 + BIT6;
 
+    GPIO_setAsPeripheralModuleFunctionInputPin(
+        GPIO_PORT_P2,
+        GPIO_PIN0 + GPIO_PIN1,
+        GPIO_PRIMARY_MODULE_FUNCTION
+    );
+
 //    GPIO_setAsPeripheralModuleFunctionInputPin(
 //        GPIO_PORT_P2,
 //        GPIO_PIN4 + GPIO_PIN5 + GPIO_PIN6,
@@ -218,14 +220,14 @@ void gpio_init(){
      * Disable the GPIO power-on default high-impedance mode to activate
      * previously configured port settings
      */
-    PMM_unlockLPM5();
+
 }
 
 void sub_program_1hz(void);
 
 void Send_Packet(uint8_t type,uint8_t* pbuf,uint8_t len);
 void Send_NACK_Packet(void);
-void Receive_Packet(void);
+uint8_t Receive_Packet(uint8_t*);
 void SPI_Bank1_Write_Reg(uint8_t reg, uint8_t *pBuf);
 void SPI_Bank1_Read_Reg(uint8_t reg, uint8_t *pBuf);
 void Carrier_Test(uint8_t b_enable); //carrier test
@@ -242,51 +244,116 @@ extern const unsigned long Bank1_Reg0_13[];
 
 uint8_t test_data;
 
-void rfm_master()
-{
-    //sends current clock and freq mode to slave
-    uint8_t i;
-    uint8_t temp_buf[9];
+#define CLOCK_DIFF_INVALID  0x7fffffff
+volatile static int32_t clock_diff = CLOCK_DIFF_INVALID;
+
+void rfm_master(){
+    uint8_t temp_buf[11];
     uint64_t curr_clock = 0;
     RTClock_get(&curr_clock);
 
-    temp_buf[0] = (curr_clock >> 56) & 0xff;
-    temp_buf[1] = (curr_clock >> 48) & 0xff;
-    temp_buf[2] = (curr_clock >> 40) & 0xff;
-    temp_buf[3] = (curr_clock >> 32) & 0xff;
-    temp_buf[4] = (curr_clock >> 24) & 0xff;
-    temp_buf[5] = (curr_clock >> 16) & 0xff;
-    temp_buf[6] = (curr_clock >> 8) & 0xff;
-    temp_buf[7] = curr_clock & 0xff;
-    temp_buf[8] = current_freq;
 
-    Send_Packet(WR_TX_PLOAD,temp_buf,9);
-    SwitchToRxMode();  //switch to Rx mode
-}
-
-void rfm_slave(){
-    Receive_Packet();
-}
-
-/*********************************************************
-Function:  sub_program_1hz()
-
-Description:
-
-*********************************************************/
-void sub_program_1hz(void)
-{
-    uint8_t i;
-    uint8_t temp_buf[32];
-
-    for(i=0;i<32;i++)
-    {
-        temp_buf[i]=0x00;
+    if(clock_diff != CLOCK_DIFF_INVALID){
+        curr_clock = curr_clock+clock_diff;
     }
 
-    Send_Packet(WR_TX_PLOAD,temp_buf,10);
-    SwitchToRxMode();  //switch to Rx mode
+    temp_buf[0] = 0x00;
+    temp_buf[1] = 0x00;
+    temp_buf[2] = (curr_clock >> 56) & 0xff;
+    temp_buf[3] = (curr_clock >> 48) & 0xff;
+    temp_buf[4] = (curr_clock >> 40) & 0xff;
+    temp_buf[5] = (curr_clock >> 32) & 0xff;
+    temp_buf[6] = (curr_clock >> 24) & 0xff;
+    temp_buf[7] = (curr_clock >> 16) & 0xff;
+    temp_buf[8] = (curr_clock >> 8) & 0xff;
+    temp_buf[9] = curr_clock & 0xff;
+    temp_buf[10] = current_freq;
+
+    Send_Packet(WR_TX_PLOAD,temp_buf,11);
+
+    GPIO_toggleOutputOnPin(
+            GPIO_PORT_LED1,
+            GPIO_PIN_LED1);
 }
+
+void rfm_send_clock()
+{
+    //sends current clock and freq mode to slave
+    uint8_t temp_buf[10];
+    uint64_t curr_clock = 0;
+    RTClock_get(&curr_clock);
+
+    temp_buf[0] = 0x00;
+    temp_buf[1] = 0x00;
+    temp_buf[2] = (curr_clock >> 56) & 0xff;
+    temp_buf[3] = (curr_clock >> 48) & 0xff;
+    temp_buf[4] = (curr_clock >> 40) & 0xff;
+    temp_buf[5] = (curr_clock >> 32) & 0xff;
+    temp_buf[6] = (curr_clock >> 24) & 0xff;
+    temp_buf[7] = (curr_clock >> 16) & 0xff;
+    temp_buf[8] = (curr_clock >> 8) & 0xff;
+    temp_buf[9] = curr_clock & 0xff;
+
+    Send_Packet(WR_TX_PLOAD,temp_buf,10);
+}
+
+void rfm_master_receive(){
+    uint8_t rx_buf[MAX_PACKET_LEN];
+    uint8_t len = Receive_Packet(rx_buf);
+
+    if(len == 10){
+        uint64_t new_clock;
+        uint64_t curr_clock;
+        new_clock = ((rx_buf[2])<<56) |
+                    ((rx_buf[3])<<48) |
+                    ((rx_buf[4])<<40) |
+                    ((rx_buf[5])<<32) |
+                    ((rx_buf[6])<<24) |
+                    ((rx_buf[7])<<16) |
+                    ((rx_buf[8])<<8) |
+                    ((rx_buf[9]));
+
+        RTClock_get(&curr_clock);
+
+        clock_diff = (curr_clock - new_clock)*2;
+    }
+}
+
+void rfm_slave_receive(){
+    uint8_t rx_buf[MAX_PACKET_LEN];
+    uint8_t len = Receive_Packet(rx_buf);
+    uint64_t new_clock;
+    //length for test packet
+    if(len == 11){
+
+        new_clock = ((rx_buf[2])<<56) |
+                    ((rx_buf[3])<<48) |
+                    ((rx_buf[4])<<40) |
+                    ((rx_buf[5])<<32) |
+                    ((rx_buf[6])<<24) |
+                    ((rx_buf[7])<<16) |
+                    ((rx_buf[8])<<8) |
+                    ((rx_buf[9]));
+
+        current_freq = rx_buf[10];
+        RTClock_set(new_clock);
+
+        reset_alarm(&led_alarm, freq_map[current_freq]);
+        reset_alarm(&alarm_1s, TIME_1S);
+
+        GPIO_setOutputLowOnPin(
+            GPIO_PORT_LED1,
+            GPIO_PIN_LED1
+            );
+//        GPIO_toggleOutputOnPin(
+//                GPIO_PORT_LED2,
+//                GPIO_PIN_LED2);
+
+        rfm_send_clock();
+        SwitchToRxMode();
+    }
+}
+
 /**************************************************
 Function: Send_Packet
 Description:
@@ -307,13 +374,13 @@ void Send_Packet(uint8_t type,uint8_t* pbuf,uint8_t len)
     if(!(fifo_sta&BIT5))//if not full, send data (write buff)
     {
         SPI_Write_Buf(type, pbuf, len); // Writes data to buffer
-        GPIO_setOutputHighOnPin(
-                GPIO_PORT_LED2,
-                GPIO_PIN_LED2);
-        delay_ms(100);
-        GPIO_setOutputLowOnPin(
-                GPIO_PORT_LED2,
-                GPIO_PIN_LED2);
+//        GPIO_setOutputHighOnPin(
+//                GPIO_PORT_LED2,
+//                GPIO_PIN_LED2);
+        //delay_ms(100);
+//        GPIO_setOutputLowOnPin(
+//                GPIO_PORT_LED2,
+//                GPIO_PIN_LED2);
     }
 }
 /**************************************************
@@ -325,16 +392,12 @@ Parameter:
 Return:
     None
 **************************************************/
-void Receive_Packet(void)
+uint8_t Receive_Packet(uint8_t *buf_out)
 {
-    uint8_t  len,i,j,k,sta,fifo_sta,value,chksum;
-    uint64_t new_clock = 0;
-
-    //SwitchToRxMode();
+    uint8_t  len,sta,fifo_sta;
 
     sta=SPI_Read_Reg(STATUS); // read register STATUS's value
 
-    __delay_cycles(1);
     if((STATUS_RX_DR&sta) == 0x40)        // if receive data ready (RX_DR) interrupt
     {
       do
@@ -343,10 +406,10 @@ void Receive_Packet(void)
 
         if(len<=MAX_PACKET_LEN)
         {
-          SPI_Read_Buf(RD_RX_PLOAD,rx_buf,len);// read receive payload from RX_FIFO buffer
-          GPIO_setOutputHighOnPin(
-                  GPIO_PORT_LED2,
-                  GPIO_PIN_LED2);
+          SPI_Read_Buf(RD_RX_PLOAD,buf_out,len);// read receive payload from RX_FIFO buffer
+//          GPIO_setOutputHighOnPin(
+//                  GPIO_PORT_LED2,
+//                  GPIO_PIN_LED2);
         }
         else
         {
@@ -357,65 +420,12 @@ void Receive_Packet(void)
 
       }while((fifo_sta&FIFO_STATUS_RX_EMPTY)==0); //while not empty
 
-      //length for test packet
-      if(len == 9){
-          GPIO_setOutputHighOnPin(
-                  GPIO_PORT_LED2,
-                  GPIO_PIN_LED2);
-          uint64_t *temp_p;
-          temp_p = (uint64_t*)rx_buf;
-
-          new_clock = *temp_p;
-          current_freq = rx_buf[8];
-
-          RTClock_set(new_clock);
-
-          reset_alarm(&led_alarm, freq_map[current_freq]);
-          reset_alarm(&alarm_1s, TIME_1S);
-          GPIO_setOutputLowOnPin(
-              GPIO_PORT_LED1,
-              GPIO_PIN_LED1
-              );
-      }
-
-
-
-//      while(1){
-//          for(j = 0; j<len; j++){
-//              if(rx_buf[j] == 0xab){
-//                 for(k = 0; k < j+1; k++){
-//                     GPIO_setOutputHighOnPin(
-//                             GPIO_PORT_LED2,
-//                             GPIO_PIN_LED2);
-//                     delay_ms(500);
-//                     GPIO_setOutputLowOnPin(
-//                             GPIO_PORT_LED2,
-//                             GPIO_PIN_LED2);
-//                     delay_ms(500);
-//                 }
-//
-//                 break;
-//              }
-//          }
-//          break;
-//      }
-
-
-
-//      GPIO_setOutputHighOnPin(
-//              GPIO_PORT_LED2,
-//              GPIO_PIN_LED2);
-      delay_ms(100);
-      GPIO_setOutputLowOnPin(
-              GPIO_PORT_LED2,
-              GPIO_PIN_LED2);
-
-
-      //Send_NACK_Packet();
-      //Send_Packet(W_TX_PAYLOAD_NOACK_CMD,rx_buf,17);
-      SwitchToRxMode();//switch to RX mode
-      }
+    }
+    else{
+        len = 0;
+    }
     SPI_Write_Reg(WRITE_REG|STATUS,sta);// clear RX_DR or TX_DS or MAX_RT interrupt flag
+    return len;
 }
 
 volatile bool send_sync_message = false;
@@ -426,6 +436,7 @@ void main (void)
 
     gpio_init();
     clock_init();
+    PMM_unlockLPM5();
     RTClock_init(0, INTERVAL_TIME);
 
     reset_alarm(&led_alarm, freq_map[current_freq]);
@@ -436,10 +447,14 @@ void main (void)
     RFM73_Initialize();
     SwitchToRxMode();  //switch to tx mode
 
-    static const bool master = 0;
 
-    //master_program
-    while(master){
+    GPIO_clearInterrupt(2, 0xff);
+    send_sync_message = false;
+
+
+    static const bool master = false;
+
+    while(1){
         if(led_alarm.triggered){
             led_alarm.triggered = false;
             reset_alarm(&led_alarm, freq_map[current_freq]);
@@ -450,55 +465,36 @@ void main (void)
         if(alarm_1s.triggered){
             alarm_1s.triggered = false;
             reset_alarm(&alarm_1s, TIME_1S);
-//            GPIO_toggleOutputOnPin(
-//                    GPIO_PORT_LED2,
-//                    GPIO_PIN_LED2 + BIT5);
-           // Receive_Packet();
+            GPIO_toggleOutputOnPin(
+                    GPIO_PORT_LED2,
+                    GPIO_PIN_LED2);
         }
 
         if(send_sync_message){
             send_sync_message = false;
-            rfm_master();
+            if(master){
+                rfm_master();
+            }
             reset_alarm(&led_alarm, freq_map[current_freq]);
             reset_alarm(&alarm_1s, TIME_1S);
             GPIO_setOutputLowOnPin(
                 GPIO_PORT_LED1,
                 GPIO_PIN_LED1
                 );
+            GPIO_setOutputLowOnPin(
+                GPIO_PORT_LED2,
+                GPIO_PIN_LED2
+                );
+            SwitchToRxMode();  //switch to Rx mode
+        }
+
+        if(master){
+            rfm_master_receive();
+        }
+        else{
+            rfm_slave_receive();
         }
     }
-
-    //slave_program
-    while(!master){
-        if(led_alarm.triggered){
-            led_alarm.triggered = false;
-            reset_alarm(&led_alarm, freq_map[current_freq]);
-            GPIO_toggleOutputOnPin(
-                    GPIO_PORT_LED1,
-                    GPIO_PIN_LED1);
-        }
-        if(alarm_1s.triggered){
-            alarm_1s.triggered = false;
-            reset_alarm(&alarm_1s, TIME_1S);
-//            GPIO_toggleOutputOnPin(
-//                    GPIO_PORT_LED2,
-//                    GPIO_PIN_LED2 + BIT5);
-            //sub_program_1hz();  //not sure if required
-
-        }
-        Receive_Packet();
-
-//        if(send_sync_message){
-//            rfm_master();
-//        }
-    }
-
-
-    //Enter LPM3 mode with interrupts enabled
-//    __bis_SR_register(LPM0_bits + GIE);
-//    //__enable_interrupt();
-//    __no_operation();
-    //unsigned long clock_speed = CS_getMCLK();
 }
 
 //#if defined(__TI_COMPILER_VERSION__) || defined(__IAR_SYSTEMS_ICC__)

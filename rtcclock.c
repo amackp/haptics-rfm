@@ -48,7 +48,7 @@ void RTClock_init(uint64_t curclk, uint32_t  interval)
         RTC_OVERFLOW_INTERRUPT);
 
     //Start RTC Clock with clock source SMCLK
-    RTC_start(RTC_BASE, RTC_CLOCKSOURCE_SMCLK);
+    RTC_start(RTC_BASE, RTC_CLOCKSOURCE_XT1CLK);
 }
 
 // RTC interrupt service routine
